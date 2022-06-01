@@ -1,10 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
 ################################################################################
 #
 # r8101 is the Linux device driver released for Realtek Fast Ethernet
 # controllers with PCI-Express interface.
 #
-# Copyright(c) 2020 Realtek Semiconductor Corp. All rights reserved.
+# Copyright(c) 2022  Realtek Semiconductor Corp. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the Free
@@ -32,6 +33,10 @@
  ***********************************************************************************/
 
 #include <linux/ethtool.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,32)
+typedef int netdev_tx_t;
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22)
 #define skb_transport_offset(skb) (skb->h.raw - skb->data)
@@ -129,6 +134,10 @@ do { \
 #define RTL_ALLOC_SKB_INTR(tp, length) napi_alloc_skb(&tp->napi, length)
 #endif
 #endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,6,0)
+#define eth_random_addr(addr) random_ether_addr(addr)
+#endif //LINUX_VERSION_CODE < KERNEL_VERSION(3,6,0)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3,3,0)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0)
@@ -312,12 +321,12 @@ do { \
 #define NAPI_SUFFIX		""
 #endif
 
-#define RTL8101_VERSION "1.035.03" NAPI_SUFFIX
+#define RTL8101_VERSION "1.037.00" NAPI_SUFFIX
 #define MODULENAME "r8101"
 #define PFX MODULENAME ": "
 
 #define GPL_CLAIM "\
-r8101  Copyright (C) 2020  Realtek NIC software team <nicfae@realtek.com> \n \
+r8101  Copyright (C) 2022 Realtek NIC software team <nicfae@realtek.com> \n \
 This program comes with ABSOLUTELY NO WARRANTY; for details, please see <http://www.gnu.org/licenses/>. \n \
 This is free software, and you are welcome to redistribute it under certain conditions; see <http://www.gnu.org/licenses/>. \n"
 
@@ -381,12 +390,16 @@ This is free software, and you are welcome to redistribute it under certain cond
 #define R8101_PCI_REGS_SIZE  	(0x100)
 #define R8101_NAPI_WEIGHT	64
 
-#define NUM_TX_DESC	1024	/* Number of Tx descriptor registers */
-#define NUM_RX_DESC	1024	/* Number of Rx descriptor registers */
+#define MAX_NUM_TX_DESC 1024    /* Maximum number of Tx descriptor registers */
+#define MAX_NUM_RX_DESC 1024    /* Maximum number of Rx descriptor registers */
+
+#define MIN_NUM_TX_DESC 32    /* Minimum number of Tx descriptor registers */
+#define MIN_NUM_RX_DESC 32    /* Minimum number of Rx descriptor registers */
+
+#define NUM_TX_DESC 256    /* Number of Tx descriptor registers */
+#define NUM_RX_DESC 256    /* Number of Rx descriptor registers */
 
 #define RX_BUF_SIZE	0x05EF	/* Rx Buffer size */
-#define R8101_TX_RING_BYTES	(NUM_TX_DESC * sizeof(struct TxDesc))
-#define R8101_RX_RING_BYTES	(NUM_RX_DESC * sizeof(struct RxDesc))
 
 #define RTL8101_TX_TIMEOUT		(6*HZ)
 #define RTL8101_LINK_TIMEOUT    (1 * HZ)
@@ -436,6 +449,10 @@ This is free software, and you are welcome to redistribute it under certain cond
 
 #ifndef	ADVERTISE_PAUSE_ASYM
 #define ADVERTISE_PAUSE_ASYM	0x800
+#endif
+
+#ifndef ETH_MIN_MTU
+#define ETH_MIN_MTU  68
 #endif
 
 /*****************************************************************************/
@@ -1274,7 +1291,7 @@ struct rtl8101_counters {
         u64	rx_broadcast;
         u32	rx_multicast;
         u16	tx_aborted;
-        u16	tx_underun;
+        u16	tx_underrun;
 };
 
 enum wol_capability {
@@ -1362,6 +1379,15 @@ struct pci_resource {
         u32 pci_sn_h;
 };
 
+/* Flow Control Settings */
+enum rtl8101_fc_mode {
+        rtl8101_fc_none = 0,
+        rtl8101_fc_rx_pause,
+        rtl8101_fc_tx_pause,
+        rtl8101_fc_full,
+        rtl8101_fc_default
+};
+
 struct rtl8101_private {
         void __iomem *mmio_addr;	/* memory map physical address */
         struct pci_dev *pci_dev;	/* Index of PCI device */
@@ -1384,12 +1410,14 @@ struct rtl8101_private {
         u32 cur_tx; /* Index into the Tx descriptor buffer of next Rx pkt. */
         u32 dirty_rx;
         u32 dirty_tx;
+        u32 num_rx_desc; /* Number of Rx descriptor registers */
+        u32 num_tx_desc; /* Number of Tx descriptor registers */
         struct TxDesc *TxDescArray;	/* 256-aligned Tx descriptor ring */
         struct RxDesc *RxDescArray;	/* 256-aligned Rx descriptor ring */
         dma_addr_t TxPhyAddr;
         dma_addr_t RxPhyAddr;
-        struct sk_buff *Rx_skbuff[NUM_RX_DESC];	/* Rx data buffers */
-        struct ring_info tx_skb[NUM_TX_DESC];	/* Tx data buffers */
+        struct sk_buff *Rx_skbuff[MAX_NUM_RX_DESC];	/* Rx data buffers */
+        struct ring_info tx_skb[MAX_NUM_TX_DESC];	/* Tx data buffers */
         unsigned rx_buf_sz;
         struct timer_list link_timer;
         struct timer_list esd_timer;
@@ -1413,6 +1441,7 @@ struct rtl8101_private {
         u8  duplex;
         u32 speed;
         u32 advertising;
+        enum rtl8101_fc_mode fcpause;
         u16 eeprom_len;
         u16 cur_page;
         u32 bios_setting;
@@ -1471,6 +1500,7 @@ struct rtl8101_private {
 
         u8 random_mac;
 
+        u16 phy_reg_aner;
         u16 phy_reg_anlpar;
 
         u32 eee_adv_t;
@@ -1509,6 +1539,7 @@ enum mcfg {
         CFG_METHOD_17,
         CFG_METHOD_18,
         CFG_METHOD_19,
+        CFG_METHOD_20,
         CFG_METHOD_MAX,
         CFG_METHOD_DEFAULT = 0xFF
 };
@@ -1535,6 +1566,7 @@ enum mcfg {
 //Ram Code Version
 #define NIC_RAMCODE_VERSION_CFG_METHOD_17 (0x0001)
 #define NIC_RAMCODE_VERSION_CFG_METHOD_18 (0x0055)
+#define NIC_RAMCODE_VERSION_CFG_METHOD_20 (0x0004)
 
 //hwoptimize
 #define HW_PATCH_SOC_LAN (BIT_0)
