@@ -1,1 +1,0 @@
-cmd_/home/adithya/realtek-r8101-linux-driver/src/r8101.o := ld -m elf_x86_64  -z max-page-size=0x200000    -r -o /home/adithya/realtek-r8101-linux-driver/src/r8101.o /home/adithya/realtek-r8101-linux-driver/src/r8101_n.o /home/adithya/realtek-r8101-linux-driver/src/rtl_eeprom.o /home/adithya/realtek-r8101-linux-driver/src/rtltool.o
