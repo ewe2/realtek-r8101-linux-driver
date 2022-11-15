@@ -32,7 +32,7 @@
 
 KFLAG := 2$(shell uname -r | sed -ne 's/^2\.[4]\..*/4/p')x
 
-all: clean modules install
+all: clean modules
 
 modules:
 ifeq ($(KFLAG),24x)
